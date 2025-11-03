@@ -1,0 +1,99 @@
+// Better-Auth Compatible Schema
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model user {
+  id            String    @id
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  name          String
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  session       session[]
+  account       account[]
+  calls         Call[]
+}
+
+model session {
+  id        String   @id
+  userId    String
+  expiresAt DateTime
+  token     String   @unique
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user user @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model account {
+  id                String  @id
+  userId            String
+  accountId         String
+  providerId        String
+  accessToken       String?
+  refreshToken      String?
+  idToken           String?
+  expiresAt         DateTime?
+  password          String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user user @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+// Call model for tracking outbound calls
+model Call {
+  id            String    @id @default(cuid())
+  userId        String
+  callSid       String    @unique
+  targetNumber  String
+  fromNumber    String
+  status        String
+  duration      Int?
+  startedAt     DateTime?
+  endedAt       DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  user      user       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amdEvents AMDEvent[]
+
+  @@index([userId])
+  @@index([callSid])
+}
+
+// AMD Event model
+model AMDEvent {
+  id           String   @id @default(cuid())
+  callId       String
+  strategy     String
+  decision     String
+  confidence   Float?
+  latencyMs    Int?
+  metadata     Json?
+  timestamp    DateTime @default(now())
+
+  call Call @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@index([callId])
+  @@index([strategy])
+}

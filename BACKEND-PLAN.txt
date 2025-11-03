@@ -1,0 +1,599 @@
+================================================================================
+                    AUDRIA - BACKEND IMPLEMENTATION PLAN
+                    Phase 3: Backend API Development
+================================================================================
+
+Project: Advanced Answering Machine Detection (AMD) System
+Backend Stack: Next.js API Routes, Twilio SDK, Prisma ORM, PostgreSQL
+Python Stack: FastAPI, HuggingFace Transformers, PyTorch, WebSockets
+
+================================================================================
+PHASE 3.1: TWILIO INTEGRATION & CORE CALLING                       [100% ✓]
+================================================================================
+ 
+3.1.2 Twilio Credentials Management
+    ✓ Create API route: POST /api/settings/twilio
+    ✓ Validate Account SID format (starts with AC)
+    ✓ Validate Auth Token (32 characters)
+    ✓ Validate phone number (E.164 format)
+    ✓ Encrypt credentials before storing (AES-256-GCM)
+    ✓ Store in database (User model with encrypted fields)
+    ✓ Create API route: GET /api/settings/twilio
+    ✓ Create API route: DELETE /api/settings/twilio
+    ✓ Return masked credentials (show last 4 digits only)
+    Files: src/app/api/settings/twilio/route.ts, src/lib/crypto.ts
+    Database: Added twilioAccountSid, twilioAuthToken, twilioPhoneNumber to User model
+    Status: COMPLETE
+
+3.1.3 Outbound Call Initiation
+    ✓ Create API route: POST /api/calls/initiate
+    ✓ Validate request body (targetNumber, strategy, userId)
+    ✓ Validate phone number format (E.164)
+    ✓ Fetch user's Twilio credentials from database
+    ✓ Create Call record in database (status: 'queued')
+    ✓ Call Twilio API to initiate outbound call
+    ✓ Set StatusCallback URL to /api/calls/webhook
+    ✓ Return Call record with callSid to client
+    ✓ Handle Twilio API errors (invalid number, insufficient funds)
+    Files: src/app/api/calls/initiate/route.ts, src/lib/twilio.ts
+    Request Body: { targetNumber: string, strategy: string }
+    Response: { callId: string, callSid: string, status: string }
+    Status: COMPLETE
+
+3.1.4 TwiML Configuration
+    ✓ Create API route: POST /api/calls/twiml
+    ✓ Generate TwiML response for call flow
+    ✓ Add <Say> greeting and timing
+    ✓ Add media streaming support for advanced AMD strategies
+    ✓ Handle different TwiML for each AMD strategy
+    ✓ Persist synchronous AMD via AnsweredBy when available (trial-friendly)
+    Files: src/app/api/calls/twiml/route.ts
+    Status: COMPLETE
+
+3.1.5 Twilio Webhook Handler
+    ✓ Create API route: POST /api/calls/webhook
+    ✓ Parse webhook payload (CallSid, CallStatus, etc.)
+    ✓ Update Call record in database based on status
+    ✓ Handle events: initiated, ringing, in-progress, completed, failed
+    ✓ Log all events for debugging
+    ✓ Return 200 OK to Twilio
+    ☐ Verify Twilio signature for security (pending)
+    Files: src/app/api/calls/webhook/route.ts
+    Webhook Events: initiated, ringing, answered, completed, busy, failed, no-answer
+    Status: 95% COMPLETE
+
+Phase 3.1 Total Time: ~5 hours - COMPLETE
+
+================================================================================
+PHASE 3.2: AMD STRATEGY IMPLEMENTATIONS                              [80%]
+================================================================================
+
+--------------------------------------------------------------------------------
+3.2.1 TWILIO NATIVE AMD (Strategy 1)                               [100% ✓]
+--------------------------------------------------------------------------------
+
+Description: Use Twilio's built-in MachineDetection parameter
+Pros: Simplest, no additional infrastructure, fastest to implement
+Cons: Less accurate, higher cost per call, limited customization
+
+Implementation Steps:
+    ✓ Modify /api/calls/initiate to add MachineDetection parameter
+    ✓ Set MachineDetection: "Enable"
+    ✓ Set AsyncAmd: true for faster detection
+    ✓ Set AsyncAmdStatusCallback: /api/amd/twilio-callback
+    ✓ Create API route: POST /api/amd/twilio-callback
+    ✓ Parse AnsweredBy field (human, machine_start, machine_end_beep, fax, unknown)
+    ✓ Create AMDEvent record in database
+    ✓ If machine detected: hangup call immediately
+    ✓ If human detected: connect call (update TwiML)
+    ✓ Calculate detection latency (time from call start to AMD result)
+    ✓ Log confidence score if available
+
+Files:
+    - src/app/api/calls/initiate/route.ts (modified)
+    - src/app/api/amd/twilio-callback/route.ts (implemented)
+
+Database Schema:
+    AMDEvent {
+        strategy: "twilio_native"
+        detection: "human" | "machine" | "unknown"
+        confidence: null (Twilio doesn't provide)
+        latencyMs: calculated
+        metadata: { answeredBy, machineDetectionDuration }
+    }
+
+Testing:
+    ☐ Test with Costco voicemail: 1-800-774-2678
+    ☐ Test with PayPal: 1-888-221-1161
+    ☐ Test with personal phone (human pickup)
+    ☐ Measure accuracy and latency
+
+Status: COMPLETE - Estimated Time: 2 hours
+
+--------------------------------------------------------------------------------
+3.2.2 JAMBONZ SIP-ENHANCED AMD (Strategy 2)                        [100% ✓]
+--------------------------------------------------------------------------------
+
+Description: Heuristic Jambonz SIP-enhanced AMD using call timing + statuses. No external Jambonz instance required.
+Pros: Zero setup, customizable thresholds, works alongside Twilio AMD
+Cons: Heuristic (best-effort), not SIP metrics from a live PBX
+
+Implementation Steps:
+    ✓ Create webhook: POST /api/amd/jambonz-callback (form-encoded)
+    ✓ Heuristics: quick_answer (<2s)=human, delayed_answer (>4s)=machine, quick_hangup (<10s)=voicemail
+    ✓ Use Twilio AnsweredBy when present as assist signal
+    ✓ Persist AMDEvent with detection, confidence, latencyMs, metadata
+    ✓ Trigger from TwiML when strategy=jambonz
+
+Files:
+    - src/app/api/calls/initiate/route.ts (modified)
+    - src/app/api/calls/twiml/route.ts (modified)
+    - src/app/api/amd/jambonz-callback/route.ts (new)
+
+Environment Variables:
+    JAMBONZ_API_KEY=xxx
+    JAMBONZ_ACCOUNT_SID=xxx
+    JAMBONZ_BASE_URL=https://your-jambonz-instance.com
+
+Database Schema:
+    AMDEvent {
+        strategy: "jambonz"
+        detection: "human" | "machine" | "unknown"
+        confidence: 0.0-1.0
+        latencyMs: calculated
+        metadata: { analysisMethod, callStatus, elapsedTime, answeredBy }
+    }
+
+Testing:
+    ☐ Test with same numbers as Twilio Native
+    ☐ Compare accuracy vs Twilio Native
+    ☐ Measure latency difference
+    ☐ Test edge cases (silence, fax tones)
+
+Estimated Time: COMPLETE
+
+--------------------------------------------------------------------------------
+3.2.3 HUGGINGFACE ML MODEL (Strategy 3)                           [0%]
+--------------------------------------------------------------------------------
+
+Description: Direct HuggingFace Inference API integration for audio classification
+Pros: High accuracy, no separate microservice needed, scalable
+Cons: Requires HuggingFace API key, internet dependency
+
+Architecture:
+    Next.js API → Twilio Media Streams → HuggingFace Inference API
+
+Implementation Steps:
+    ☐ Create /src/lib/huggingface.ts service wrapper
+    ☐ Implement wav2vec2-base-960h model integration
+    ☐ Create real-time audio processor with buffering
+    ☐ Implement fallback heuristics for reliability
+    ☐ Create API route: POST /api/amd/huggingface-stream
+    ☐ Handle audio chunk processing and inference
+    ☐ Create AMDEvent record with confidence scores
+    ☐ Integrate with TwiML media streaming
+
+Files:
+    - src/app/api/calls/initiate/route.ts (modify)
+    - src/app/api/amd/media-stream/route.ts (new WebSocket handler)
+    - src/lib/fastapi-client.ts (HTTP client for FastAPI)
+
+B. Python FastAPI Service:
+    ☐ Create /backend/fastapi directory
+    ☐ Initialize FastAPI project: fastapi, uvicorn, python-multipart
+    ☐ Install dependencies: transformers, torch, torchaudio, librosa
+    ☐ Load HuggingFace model: facebook/wav2vec2-base or custom
+    ☐ Create endpoint: POST /predict
+    ☐ Accept audio file or base64 audio data
+    ☐ Preprocess audio (resample to 16kHz, normalize)
+    ☐ Run inference
+    ☐ Return prediction: { decision: "human"|"machine", confidence: 0.95 }
+    ☐ Create WebSocket endpoint: /ws/stream
+    ☐ Buffer audio chunks
+    ☐ Run incremental inference every 500ms
+    ☐ Return early if confidence > 0.9
+
+Files:
+    - backend/fastapi/main.py
+    - backend/fastapi/models/amd_model.py
+    - backend/fastapi/utils/audio_processing.py
+    - backend/fastapi/requirements.txt
+    - backend/fastapi/Dockerfile
+
+Python Requirements:
+    fastapi==0.104.1
+    uvicorn[standard]==0.24.0
+    transformers==4.35.0
+    torch==2.1.0
+    torchaudio==2.1.0
+    librosa==0.10.1
+    websockets==12.0
+    numpy==1.24.3
+
+Model Options:
+    1. facebook/wav2vec2-base (general speech recognition)
+    2. facebook/wav2vec2-large-960h (better accuracy)
+    3. Custom fine-tuned model on voicemail dataset
+
+Database Schema:
+    AMDEvent {
+        strategy: "huggingface"
+        detection: "human" | "machine"
+        confidence: 0.0-1.0
+        latencyMs: calculated
+        metadata: { modelName, audioLength, samplingRate }
+    }
+
+Testing:
+    ☐ Test with voicemail numbers
+    ☐ Test with human pickup
+    ☐ Measure latency (target: <3s)
+    ☐ Test with different accents
+    ☐ Compare accuracy vs Twilio and Jambonz
+
+Estimated Time: 6 hours
+
+--------------------------------------------------------------------------------
+3.2.4 GEMINI FLASH 2.5 LLM (Strategy 4)                          [0%]
+--------------------------------------------------------------------------------
+
+Description: Google Gemini Flash Live API for real-time audio analysis
+Pros: State-of-the-art accuracy, understands context, detailed reasoning
+Cons: Higher cost, requires Google AI API key, token usage
+
+Implementation Steps:
+    ☐ Install Google AI SDK: @google/generative-ai
+    ☐ Create /src/lib/gemini.ts service wrapper
+    ☐ Initialize Gemini client with API key
+    ☐ Create API route: POST /api/amd/gemini-stream
+    ☐ Stream audio chunks to Gemini Live API
+    ☐ Implement structured JSON prompt for AMD classification
+    ☐ Parse Gemini response with detailed reasoning
+    ☐ Create AMDEvent record with confidence and metadata
+    ☐ Handle rate limits and token cost tracking
+    ☐ Implement fallback logic and error handling
+    ☐ Integrate with TwiML media streaming
+
+Files:
+    - src/lib/gemini.ts (new)
+    - src/app/api/calls/initiate/route.ts (modify)
+    - src/app/api/amd/gemini-stream/route.ts (new)
+
+Environment Variables:
+    GOOGLE_AI_API_KEY=xxx
+    GEMINI_MODEL=gemini-2.0-flash-exp
+
+Prompt Engineering:
+    System Prompt:
+    "You are an expert at detecting whether a phone call is answered by a human or a voicemail machine.
+    Listen to the audio and respond immediately with JSON:
+    {
+      'decision': 'human' or 'machine',
+      'confidence': 0.0 to 1.0,
+      'reasoning': 'brief explanation'
+    }
+    
+    Indicators of voicemail:
+    - Long greeting (>5 words)
+    - Mentions 'leave a message'
+    - Robotic or recorded voice
+    - Background music or beep
+    
+    Indicators of human:
+    - Short greeting ('hello', 'yes')
+    - Natural speech patterns
+    - Immediate response
+    - Background conversation noise"
+
+Database Schema:
+    AMDEvent {
+        strategy: "gemini"
+        detection: "human" | "machine"
+        confidence: 0.0-1.0
+        latencyMs: calculated
+        metadata: { reasoning, tokensUsed, cost }
+    }
+
+Cost Estimation:
+    - Gemini Flash 2.5: $0.00001875 per 1K input tokens
+    - Average call: ~500 tokens = $0.000009375 per call
+    - Much cheaper than Twilio per-minute charges
+
+Testing:
+    ☐ Test with voicemail numbers
+    ☐ Test with human pickup
+    ☐ Test edge cases (silence, ambiguous greetings)
+    ☐ Measure latency and cost
+    ☐ Compare accuracy vs other strategies
+
+Estimated Time: 4 hours
+
+Phase 3.2 Total Time: ~16 hours
+
+================================================================================
+PHASE 3.3: CALL HISTORY & ANALYTICS APIs                              [10%]
+================================================================================
+
+3.3.1 Fetch Call History
+    ☐ Create API route: GET /api/calls
+    ☐ Add query parameters: page, limit, status, strategy, search
+    ☐ Implement pagination (default: 10 per page)
+    ☐ Filter by status (completed, in-progress, failed)
+    ☐ Filter by AMD strategy
+    ☐ Search by phone number or Call SID
+    ✓ Include AMDEvent data in response (standardized 'detection' field)
+    ☐ Sort by createdAt DESC
+    ☐ Return total count for pagination
+    Files: src/app/api/calls/route.ts
+    Response: { calls: Call[], total: number, page: number, limit: number }
+    Estimated Time: 2 hours
+
+3.3.2 Fetch Single Call Details
+    ☐ Create API route: GET /api/calls/[id]
+    ☐ Fetch Call by ID with all relations
+    ☐ Include user, amdEvents, full metadata
+    ☐ Return 404 if not found
+    ☐ Verify user owns the call (authorization)
+    Files: src/app/api/calls/[id]/route.ts
+    Estimated Time: 30 minutes
+
+3.3.3 Export Calls to CSV
+    ☐ Create API route: POST /api/calls/export
+    ☐ Accept filters (same as GET /api/calls)
+    ☐ Fetch all matching calls (no pagination)
+    ☐ Convert to CSV format
+    ☐ Include columns: Call SID, Target Number, Strategy, Decision, Duration, Status, Date
+    ☐ Set response headers for file download
+    ☐ Return CSV file
+    Files: src/app/api/calls/export/route.ts
+    Library: npm install csv-stringify
+    Estimated Time: 1 hour
+
+3.3.4 Analytics Data API
+    ☐ Create API route: GET /api/analytics
+    ☐ Add query parameter: timeRange (7d, 30d, 90d, all)
+    ☐ Calculate aggregate stats:
+        - Total calls
+        - Human detected count
+        - Machine detected count
+        - Average detection time
+        - Success rate (human / total)
+    ☐ Group by strategy for comparison
+    ☐ Calculate cost savings (estimated)
+    ☐ Return time-series data for charts
+    Files: src/app/api/analytics/route.ts
+    Response: { stats: {}, strategyPerformance: [], timeSeries: [] }
+    Estimated Time: 2 hours
+
+Phase 3.3 Total Time: ~5 hours
+
+================================================================================
+PHASE 3.4: DATABASE SCHEMA UPDATES                                    [10%]
+================================================================================
+
+3.4.1 Add Twilio Credentials to User Model
+    ☐ Update prisma/schema.prisma
+    ☐ Add fields: twilioAccountSid, twilioAuthToken, twilioPhoneNumber
+    ☐ Encrypt sensitive fields (use @db.Text for encrypted data)
+    ☐ Run migration: npx prisma migrate dev --name add_twilio_credentials
+    Files: prisma/schema.prisma
+    Estimated Time: 30 minutes
+
+3.4.2 Update Call Model (if needed)
+    ☐ Add field: selectedStrategy (twilio, jambonz, huggingface, gemini)
+    ☐ Add field: metadata (Json) for strategy-specific data
+    ☐ Add index on userId and createdAt for faster queries
+    Files: prisma/schema.prisma
+    Estimated Time: 20 minutes
+
+3.4.3 Verify AMDEvent Model
+    ✓ Ensure all fields are present:
+        - strategy, detection, confidence, latencyMs, metadata, timestamp
+    ☐ Add index on callId and strategy
+    Files: prisma/schema.prisma
+    Estimated Time: 10 minutes
+
+Phase 3.4 Total Time: ~1 hour
+
+================================================================================
+PHASE 3.5: FRONTEND-BACKEND INTEGRATION                               [0%]
+================================================================================
+
+3.5.1 Connect Dashboard Dial Interface
+    ☐ Update /dashboard/page.tsx
+    ☐ Add onClick handler to "Dial Now" button
+    ☐ Call POST /api/calls/initiate with phoneNumber and strategy
+    ☐ Show loading state during call initiation
+    ☐ Display success message with Call SID
+    ☐ Handle errors (invalid number, Twilio not configured, etc.)
+    ☐ Add toast notifications for feedback
+    Files: src/app/(dashboard)/dashboard/page.tsx
+    Estimated Time: 1 hour
+
+3.5.2 Connect Call History Page
+    ☐ Update /dashboard/calls/page.tsx
+    ☐ Fetch calls on page load: GET /api/calls
+    ☐ Implement filters (status, strategy, search)
+    ☐ Implement pagination
+    ☐ Add export CSV button handler
+    ☐ Show loading skeleton while fetching
+    ☐ Handle empty state
+    Files: src/app/(dashboard)/dashboard/calls/page.tsx
+    Estimated Time: 1.5 hours
+
+3.5.3 Connect Analytics Page
+    ☐ Update /dashboard/analytics/page.tsx
+    ☐ Fetch analytics data: GET /api/analytics
+    ☐ Update stats cards with real data
+    ☐ Implement time range filter
+    ☐ Add charts (use recharts or chart.js)
+    ☐ Show strategy comparison
+    Files: src/app/(dashboard)/dashboard/analytics/page.tsx
+    Library: npm install recharts
+    Estimated Time: 2 hours
+
+3.5.4 Connect Settings Page
+    ☐ Update /dashboard/settings/page.tsx
+    ☐ Fetch Twilio config: GET /api/settings/twilio
+    ☐ Pre-fill form with existing credentials (masked)
+    ☐ Add save handler: POST /api/settings/twilio
+    ☐ Show success/error messages
+    ☐ Validate inputs before submit
+    Files: src/app/(dashboard)/dashboard/settings/page.tsx
+    Estimated Time: 1 hour
+
+Phase 3.5 Total Time: ~5.5 hours
+
+================================================================================
+PHASE 3.6: ERROR HANDLING & LOGGING                                   [0%]
+================================================================================
+
+3.6.1 Global Error Handler
+    ☐ Create /src/lib/errors.ts with custom error classes
+    ☐ TwilioError, ValidationError, AuthenticationError, etc.
+    ☐ Add error middleware for API routes
+    ☐ Return consistent error format: { error: string, code: string, details?: any }
+    ☐ Log errors to console (or external service like Sentry)
+    Files: src/lib/errors.ts, src/middleware.ts
+    Estimated Time: 1 hour
+
+3.6.2 Request Logging
+    ☐ Create /src/lib/logger.ts
+    ☐ Log all API requests (method, path, userId, timestamp)
+    ☐ Log response status and duration
+    ☐ Use winston or pino for structured logging
+    Files: src/lib/logger.ts
+    Estimated Time: 45 minutes
+
+3.6.3 Twilio Webhook Validation
+    ☐ Verify Twilio signature on all webhook requests
+    ☐ Reject requests with invalid signatures (security)
+    ☐ Use twilio.validateRequest() helper
+    Files: src/app/api/calls/webhook/route.ts
+    Estimated Time: 30 minutes
+
+Phase 3.6 Total Time: ~2.25 hours
+
+================================================================================
+TOTAL PHASE 3 ESTIMATED TIME                                          
+================================================================================
+
+Phase 3.1: Twilio Integration                    ~5 hours
+Phase 3.2: AMD Strategies                        ~16 hours
+Phase 3.3: Call History & Analytics APIs         ~5 hours
+Phase 3.4: Database Schema Updates               ~1 hour
+Phase 3.5: Frontend-Backend Integration          ~5.5 hours
+Phase 3.6: Error Handling & Logging              ~2.25 hours
+
+TOTAL: ~35 hours (approximately 4-5 days of focused work)
+
+================================================================================
+IMPLEMENTATION ORDER (RECOMMENDED)
+================================================================================
+
+Day 1 (8 hours):
+    1. Phase 3.1: Twilio Integration (5 hours)
+    2. Phase 3.4: Database Schema Updates (1 hour)
+    3. Phase 3.2.1: Twilio Native AMD (2 hours)
+
+Day 2 (8 hours):
+    1. Phase 3.2.2: Jambonz AMD (4 hours)
+    2. Phase 3.3: Call History & Analytics APIs (4 hours)
+
+Day 3 (8 hours):
+    1. Phase 3.2.3: HuggingFace ML Model (6 hours)
+    2. Phase 3.5.1-3.5.2: Frontend Integration (2 hours)
+
+Day 4 (8 hours):
+    1. Phase 3.2.4: Gemini Flash AMD (4 hours)
+    2. Phase 3.5.3-3.5.4: Frontend Integration (2 hours)
+    3. Phase 3.6: Error Handling & Logging (2 hours)
+
+Day 5 (Buffer):
+    - Testing and bug fixes
+    - Performance optimization
+    - Documentation
+
+================================================================================
+TESTING CHECKLIST
+================================================================================
+
+☐ Test Twilio Native AMD with voicemail numbers
+☐ Test Twilio Native AMD with human pickup
+☐ Test Jambonz AMD (if implemented)
+☐ Test HuggingFace ML model accuracy
+☐ Test Gemini Flash LLM accuracy
+☐ Compare all 4 strategies side-by-side
+☐ Test call history pagination and filters
+☐ Test CSV export with large datasets
+☐ Test analytics calculations
+☐ Test Twilio credentials save/load
+☐ Test error handling (invalid numbers, no credits, etc.)
+☐ Test webhook signature validation
+☐ Load test: 10 concurrent calls
+☐ Edge cases: silence, fax tones, international numbers
+
+================================================================================
+ENVIRONMENT VARIABLES NEEDED
+================================================================================
+
+# Twilio (user-specific, stored in database)
+TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWILIO_AUTH_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWILIO_PHONE_NUMBER=+1234567890
+
+# Jambonz (optional)
+JAMBONZ_API_KEY=xxx
+JAMBONZ_ACCOUNT_SID=xxx
+JAMBONZ_BASE_URL=https://your-jambonz-instance.com
+
+# Google AI (for Gemini)
+GOOGLE_AI_API_KEY=xxx
+
+# FastAPI (for HuggingFace)
+FASTAPI_BASE_URL=http://localhost:8000
+
+# App URLs
+NEXT_PUBLIC_APP_BASE_URL=http://localhost:3000
+APP_BASE_URL=http://localhost:3000
+
+# Database (already configured)
+DATABASE_URL=postgresql://audria:audria@localhost:5432/audria?schema=public
+
+# Auth (already configured)
+BETTER_AUTH_SECRET=xxx
+
+================================================================================
+API ENDPOINTS SUMMARY
+================================================================================
+
+Authentication:
+    POST   /api/auth/sign-up/email
+    POST   /api/auth/sign-in/email
+    GET    /api/auth/get-session
+    POST   /api/auth/sign-out
+
+Calls:
+    POST   /api/calls/initiate          - Start outbound call
+    GET    /api/calls                   - Fetch call history
+    GET    /api/calls/[id]              - Get single call
+    POST   /api/calls/export            - Export to CSV
+    POST   /api/calls/webhook           - Twilio StatusCallback
+    GET/POST /api/calls/twiml           - TwiML response (persists sync AMD)
+
+AMD Callbacks:
+    POST   /api/amd/twilio-callback     - Twilio Native AMD
+    POST   /api/amd/jambonz-callback    - Jambonz AMD
+    WS     /api/amd/media-stream        - HuggingFace (WebSocket)
+    WS     /api/amd/gemini-stream       - Gemini Flash (WebSocket)
+
+Analytics:
+    GET    /api/analytics               - Aggregate stats
+
+Settings:
+    POST   /api/settings/twilio         - Save Twilio credentials
+    GET    /api/settings/twilio         - Get Twilio credentials
+
+================================================================================
+END OF BACKEND PLAN
+================================================================================

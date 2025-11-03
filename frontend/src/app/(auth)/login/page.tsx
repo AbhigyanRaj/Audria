@@ -2,17 +2,34 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import Button from '@/components/ui/Button';
 import Input from '@/components/ui/Input';
+import { signIn } from '@/lib/auth-client';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const router = useRouter();
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    // TODO: Implement authentication logic
-    console.log('Login:', { email, password });
+    setError('');
+    setLoading(true);
+
+    try {
+      await signIn.email({
+        email,
+        password,
+      });
+      router.push('/dashboard');
+    } catch (err: any) {
+      setError(err.message || 'Failed to sign in');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -67,8 +84,14 @@ export default function LoginPage() {
               </Link>
             </div>
 
-            <Button type="submit" variant="primary" size="lg" className="w-full">
-              Sign In
+            {error && (
+              <div className="p-3 bg-red-500/10 border border-red-500/50 rounded-2xl">
+                <p className="text-sm text-red-400">{error}</p>
+              </div>
+            )}
+
+            <Button type="submit" variant="primary" size="lg" className="w-full" disabled={loading}>
+              {loading ? 'Signing in...' : 'Sign In'}
             </Button>
           </form>
 
